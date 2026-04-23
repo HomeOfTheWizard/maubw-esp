@@ -105,8 +105,10 @@ static void uwb_process_packet(uint8_t *data, uint16_t payload_len) {
 
         if (online_dev_num == 0) {
             display_update("No Devices");
+            ble_beacon_update_uwb_data("No Devices");
         } else {
             display_update(lvgl_str);
+            ble_beacon_update_uwb_data(lvgl_str);
         }
         
     } else if (cmd_type == CMD_TYPE_CFG) {
