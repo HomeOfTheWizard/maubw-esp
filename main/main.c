@@ -1,56 +1,28 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+
+#include "common.h"
+#include "display.h"
+#include "ble_beacon.h"
+
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/event_groups.h"
-#include "esp_system.h"
-#include "esp_log.h"
-#include "esp_log_buffer.h"
 #include "driver/uart.h"
-#include "driver/gpio.h"
-#include "nvs_flash.h"
-#include "nvs.h"
-#include "esp_lcd_panel_io.h"
-#include "esp_lcd_panel_ops.h"
-#include "esp_err.h"
-#include "driver/i2c_master.h"
-#include "esp_lvgl_port.h"
-#include "lvgl.h"
-
-#include "esp_lcd_panel_vendor.h"
-
-#include "esp_wifi.h"
-#include "esp_event.h"
-#include "esp_http_server.h"
-#include "esp_mac.h"
-#include "lwip/err.h"
-#include "lwip/sys.h"
 
 
 
-static const char *TAG = "uwb_main";
-
-#define I2C_BUS_PORT    0
-#define CONFIG_EXAMPLE_SSD1306_HEIGHT 64
-
-#define EXAMPLE_LCD_PIXEL_CLOCK_HZ    (400 * 1000)
-#define EXAMPLE_PIN_NUM_SDA           39
-#define EXAMPLE_PIN_NUM_SCL           38
-#define EXAMPLE_PIN_NUM_RST           -1
-#define EXAMPLE_I2C_HW_ADDR           0x3C
-
-#define EXAMPLE_LCD_H_RES              128
-#define EXAMPLE_LCD_V_RES              CONFIG_EXAMPLE_SSD1306_HEIGHT
-
-#define EXAMPLE_LCD_CMD_BITS           8
-#define EXAMPLE_LCD_PARAM_BITS         8
-
+// UART bus pins (used to initialize the communication with the UWB module and the PC)
 #define UWB_UART_NUM    UART_NUM_2
 #define PC_UART_NUM     UART_NUM_0
 
 #define UWB_RX_PIN      15
 #define UWB_TX_PIN      16
+
+// I2C bus pins (used to initialize the I2C master bus)
+#define I2C_BUS_PORT    0
+#define PIN_NUM_SDA     39
+#define PIN_NUM_SCL     38
 
 // Max Frame is 239 bytes. 1024 is enough for ~4 frames.
 #define BUF_SIZE        1024 
@@ -60,11 +32,10 @@ static const char *TAG = "uwb_main";
 #define CMD_TYPE_RANGE 0x71
 #define CMD_TYPE_CFG   0x02 
 
-
 #define MAX_PAYLOAD_LEN 240 
 
-// --- LVGL UI objects ---
-static lv_obj_t *label_list;
+
+static const char *TAG = "uwb_main";
 
 typedef union {
     struct __attribute__((packed)) { 
@@ -132,13 +103,10 @@ static void uwb_process_packet(uint8_t *data, uint16_t payload_len) {
             // ESP_LOGI(TAG, "  DevID: %d, Distance: %d cm", (int)dev_para.bit.dev_id, dis);
         }
 
-        if (lvgl_port_lock(0)) {
-            if (online_dev_num == 0) {
-                lv_label_set_text(label_list, "No Devices");
-            } else {
-                lv_label_set_text(label_list, lvgl_str);
-            }
-            lvgl_port_unlock();
+        if (online_dev_num == 0) {
+            display_update("No Devices");
+        } else {
+            display_update(lvgl_str);
         }
         
     } else if (cmd_type == CMD_TYPE_CFG) {
@@ -240,82 +208,15 @@ void app_main(void)
         .clk_source = I2C_CLK_SRC_DEFAULT,
         .glitch_ignore_cnt = 7,
         .i2c_port = I2C_BUS_PORT,
-        .sda_io_num = EXAMPLE_PIN_NUM_SDA,
-        .scl_io_num = EXAMPLE_PIN_NUM_SCL,
+        .sda_io_num = PIN_NUM_SDA,
+        .scl_io_num = PIN_NUM_SCL,
         .flags.enable_internal_pullup = true,
     };
     ESP_ERROR_CHECK(i2c_new_master_bus(&bus_config, &i2c_bus));
 
-    esp_lcd_panel_io_handle_t io_handle = NULL;
-    esp_lcd_panel_io_i2c_config_t io_config = {
-        .dev_addr = EXAMPLE_I2C_HW_ADDR,
-        .scl_speed_hz = EXAMPLE_LCD_PIXEL_CLOCK_HZ,
-        .control_phase_bytes = 1,
-        .lcd_cmd_bits = EXAMPLE_LCD_CMD_BITS,
-        .lcd_param_bits = EXAMPLE_LCD_CMD_BITS,
-        .dc_bit_offset = 6,
-    };
-    ESP_ERROR_CHECK(esp_lcd_new_panel_io_i2c(i2c_bus, &io_config, &io_handle));
+    display_init(i2c_bus);
 
-    esp_lcd_panel_handle_t panel_handle = NULL;
-    esp_lcd_panel_dev_config_t panel_config = {
-        .bits_per_pixel = 1,
-        .reset_gpio_num = EXAMPLE_PIN_NUM_RST,
-    };
-    esp_lcd_panel_ssd1306_config_t ssd1306_config = {
-        .height = EXAMPLE_LCD_V_RES,
-    };
-    panel_config.vendor_config = &ssd1306_config;
-    ESP_ERROR_CHECK(esp_lcd_new_panel_ssd1306(io_handle, &panel_config, &panel_handle));
-
-    ESP_ERROR_CHECK(esp_lcd_panel_reset(panel_handle));
-    ESP_ERROR_CHECK(esp_lcd_panel_init(panel_handle));
-    ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_handle, true));
-
-    ESP_LOGI(TAG, "Initialize LVGL");
-    lvgl_port_cfg_t port_cfg = ESP_LVGL_PORT_INIT_CONFIG();
-    port_cfg.task_priority = 1;
-    port_cfg.task_stack = 6144;
-#if CONFIG_SOC_CPU_CORES_NUM > 1
-    port_cfg.task_affinity = 1;
-#endif
-    lvgl_port_init(&port_cfg);
-
-    ESP_LOGI(TAG, "Adding OLED display");
-
-    const lvgl_port_display_cfg_t disp_cfg = {
-        .io_handle = io_handle,
-        .panel_handle = panel_handle,
-        .buffer_size = EXAMPLE_LCD_H_RES * EXAMPLE_LCD_V_RES,
-        .double_buffer = false,
-        .trans_size = 0,
-        .hres = EXAMPLE_LCD_H_RES,
-        .vres = EXAMPLE_LCD_V_RES,
-        .monochrome = true,
-        .rotation = {
-            .swap_xy = false,
-            .mirror_x = false,
-            .mirror_y = false,
-        },
-        .flags = {
-            .buff_dma = 1,
-            .buff_spiram = 0,
-            .sw_rotate = 0,
-            .full_refresh = 0,
-            .direct_mode = 0,
-        },
-    };
-    lv_display_t *display_ = lvgl_port_add_disp(&disp_cfg);
-
-    if (lvgl_port_lock(0)) {
-        label_list = lv_label_create(lv_screen_active());
-        lv_label_set_long_mode(label_list, LV_LABEL_LONG_WRAP);
-        lv_obj_set_width(label_list, 128);
-        lv_obj_align(label_list, LV_ALIGN_TOP_LEFT, 0, 0);
-        lv_obj_set_style_text_font(label_list, &lv_font_montserrat_14, 0);
-        lv_label_set_text(label_list, "Waiting for UWB...");
-        lvgl_port_unlock();
-    }
+    ble_beacon_init();
 
     uart_config_t uart_config = {
         .baud_rate = 115200,
