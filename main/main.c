@@ -7,6 +7,7 @@
 #include "display.h"
 #include "ble_beacon.h"
 #include "uwb_parser.h"
+#include "uwb_handler.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -37,8 +38,6 @@
 
 static const char *TAG = "uwb_main";
 
-static bool ble_initialized = false;
-
 static void uwb_process_packet(uint8_t *data, uint16_t payload_len) {
     uwb_parse_result_t result = uwb_parse_frame(data, payload_len);
 
@@ -48,20 +47,7 @@ static void uwb_process_packet(uint8_t *data, uint16_t payload_len) {
     }
 
     ESP_LOGI(TAG, "Range Frame: DSTO ID: %d", result.dsto_id);
-
-    if (!ble_initialized && result.dsto_id != 0) {
-        ble_beacon_init(result.dsto_id);
-        ble_initialized = true;
-    }
-
-    if (result.status == UWB_PARSE_OK_RANGE) {
-        display_update(result.display_str);
-        if (ble_initialized) ble_beacon_update_uwb_data(result.display_str);
-    } else if (result.status == UWB_PARSE_OK_CFG) {
-        ESP_LOGI(TAG, "Received configuration packet");
-    } else {
-        ESP_LOGD(TAG, "Other command type: 0x%02X", result.cmd_type);
-    }
+    uwb_handler_process_result(&result);
 }
 
 static void pc_rx_task(void *arg) {

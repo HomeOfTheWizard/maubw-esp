@@ -1,0 +1,11 @@
+idf_component_register(
+    SRCS
+        "test_uwb_ble_init.c"
+        "${CMAKE_SOURCE_DIR}/../../main/src/uwb_handler.c"
+        "${CMAKE_SOURCE_DIR}/../../main/src/uwb_parser.c"
+    INCLUDE_DIRS
+        "."
+        "${CMAKE_SOURCE_DIR}/../../main/include"
+    REQUIRES
+        unity
+)
