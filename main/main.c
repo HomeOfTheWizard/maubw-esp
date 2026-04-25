@@ -12,6 +12,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/uart.h"
+#include "esp_adc/adc_oneshot.h"
 
 
 
@@ -21,6 +22,10 @@
 
 #define UWB_RX_PIN      15
 #define UWB_TX_PIN      16
+
+// FSR 400 sensor — GPIO 5 = ADC1 channel 4 on ESP32-S3
+#define FSR_ADC_CHANNEL     ADC_CHANNEL_4
+#define FSR_PRESS_THRESHOLD 500  // 0–4095; increase for heavier required force
 
 // I2C bus pins (used to initialize the I2C master bus)
 #define I2C_BUS_PORT    0
@@ -36,17 +41,38 @@
 #define MAX_PAYLOAD_LEN UWB_MAX_PAYLOAD_LEN
 
 
-static const char *TAG = "uwb_main";
+static const char *TAG_UWB = "uwb_main";
+static const char *TAG_FSR = "fsr_main";
+
+static adc_oneshot_unit_handle_t adc1_handle;
+
+static void fsr_task(void *arg)
+{
+    bool last_pressed = false;
+    while (1) {
+        int raw = 0;
+        adc_oneshot_read(adc1_handle, FSR_ADC_CHANNEL, &raw);
+        bool pressed = (raw > FSR_PRESS_THRESHOLD);
+        if (pressed != last_pressed) {
+            if (uwb_handler_is_ble_initialized()) {
+                ESP_LOGI(TAG_FSR, "FSR Pressed: %d", pressed);
+                ble_beacon_update_fsr_data(pressed);
+            }
+            last_pressed = pressed;
+        }
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+}
 
 static void uwb_process_packet(uint8_t *data, uint16_t payload_len) {
     uwb_parse_result_t result = uwb_parse_frame(data, payload_len);
 
     if (result.status == UWB_PARSE_ERR_CRC) {
-        ESP_LOGW(TAG, "CRC error in UWB frame");
+        ESP_LOGW(TAG_UWB, "CRC error in UWB frame");
         return;
     }
 
-    ESP_LOGI(TAG, "Range Frame: DSTO ID: %d", result.dsto_id);
+    ESP_LOGI(TAG_UWB, "Range Frame: DSTO ID: %d", result.dsto_id);
     uwb_handler_process_result(&result);
 }
 
@@ -55,7 +81,7 @@ static void pc_rx_task(void *arg) {
     while (1) {
         int len = uart_read_bytes(PC_UART_NUM, data, 1024 - 1, pdMS_TO_TICKS(100));
         if (len > 0) {
-            ESP_LOG_BUFFER_HEX(TAG, data, len);
+            ESP_LOG_BUFFER_HEX(TAG_UWB, data, len);
             uart_write_bytes(UWB_UART_NUM, data, len);
         }
         vTaskDelay(pdMS_TO_TICKS(10)); 
@@ -70,7 +96,7 @@ static void uwb_rx_task(void *arg) {
     while (1) {
         int free_space = BUF_SIZE - current_len;
         if (free_space <= 0) {
-            ESP_LOGE(TAG, "Buffer overflow, clearing");
+            ESP_LOGE(TAG_UWB, "Buffer overflow, clearing");
             current_len = 0;
             free_space = BUF_SIZE;
         }
@@ -98,7 +124,7 @@ static void uwb_rx_task(void *arg) {
                 uint16_t payload_len = rx_buffer[offset + 1] | (rx_buffer[offset + 2] << 8);
                 
                 if (payload_len > MAX_PAYLOAD_LEN) {
-                    ESP_LOGW(TAG, "Invalid payload len %d, skipping fake header", payload_len);
+                    ESP_LOGW(TAG_UWB, "Invalid payload len %d, skipping fake header", payload_len);
                     offset++;
                     continue;
                 }
@@ -110,7 +136,7 @@ static void uwb_rx_task(void *arg) {
                 }
 
                 if (rx_buffer[offset + frame_total_len - 1] != DSTO_FOOT) {
-                    ESP_LOGW(TAG, "Header found but Footer mismatch, skipping byte");
+                    ESP_LOGW(TAG_UWB, "Header found but Footer mismatch, skipping byte");
                     offset++;
                     continue;
                 }
@@ -175,5 +201,15 @@ void app_main(void)
     ESP_ERROR_CHECK(uart_set_pin(UWB_UART_NUM, UWB_TX_PIN, UWB_RX_PIN, -1, -1));
 
     xTaskCreate(pc_rx_task, "pc_rx_task", 4096, NULL, 10, NULL);
-    xTaskCreate(uwb_rx_task, "uwb_rx_task", 4096, NULL, 12, NULL); 
+    xTaskCreate(uwb_rx_task, "uwb_rx_task", 4096, NULL, 12, NULL);
+
+    /* ADC for FSR 400 sensor on GPIO 5 */
+    adc_oneshot_unit_init_cfg_t adc_init = { .unit_id = ADC_UNIT_1 };
+    ESP_ERROR_CHECK(adc_oneshot_new_unit(&adc_init, &adc1_handle));
+    adc_oneshot_chan_cfg_t adc_chan = {
+        .bitwidth = ADC_BITWIDTH_DEFAULT,
+        .atten    = ADC_ATTEN_DB_12,
+    };
+    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, FSR_ADC_CHANNEL, &adc_chan));
+    xTaskCreate(fsr_task, "fsr_task", 2048, NULL, 5, NULL);
 }

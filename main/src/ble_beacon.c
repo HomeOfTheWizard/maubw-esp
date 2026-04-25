@@ -39,6 +39,10 @@ static char beacon_device_name[32] = BEACON_DEVICE_BASE;
 static char     uwb_data_buf[UWB_DATA_BUF_LEN] = "Waiting for UWB...";
 static uint16_t uwb_data_handle;
 
+#define FSR_DATA_BUF_LEN 16
+static char     fsr_data_buf[FSR_DATA_BUF_LEN] = "FSR:0";
+static uint16_t fsr_chr_handle;
+
 static const ble_uuid128_t svc_uuid =
     BLE_UUID128_INIT(0xf0, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12,
                      0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12);
@@ -47,11 +51,25 @@ static const ble_uuid128_t chr_uuid =
     BLE_UUID128_INIT(0xf1, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12,
                      0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12);
 
+static const ble_uuid128_t fsr_chr_uuid =
+    BLE_UUID128_INIT(0xf2, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12,
+                     0x78, 0x56, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12);
+
 static int uwb_chr_access_cb(uint16_t conn_handle, uint16_t attr_handle,
                               struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
     if (ctxt->op == BLE_GATT_ACCESS_OP_READ_CHR) {
         int rc = os_mbuf_append(ctxt->om, uwb_data_buf, strlen(uwb_data_buf));
+        return rc == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+    }
+    return BLE_ATT_ERR_UNLIKELY;
+}
+
+static int fsr_chr_access_cb(uint16_t conn_handle, uint16_t attr_handle,
+                              struct ble_gatt_access_ctxt *ctxt, void *arg)
+{
+    if (ctxt->op == BLE_GATT_ACCESS_OP_READ_CHR) {
+        int rc = os_mbuf_append(ctxt->om, fsr_data_buf, strlen(fsr_data_buf));
         return rc == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
     }
     return BLE_ATT_ERR_UNLIKELY;
@@ -66,6 +84,12 @@ static const struct ble_gatt_svc_def gatt_svcs[] = {
                 .uuid       = &chr_uuid.u,
                 .access_cb  = uwb_chr_access_cb,
                 .val_handle = &uwb_data_handle,
+                .flags      = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
+            },
+            {
+                .uuid       = &fsr_chr_uuid.u,
+                .access_cb  = fsr_chr_access_cb,
+                .val_handle = &fsr_chr_handle,
                 .flags      = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
             },
             { 0 } /* sentinel */
@@ -209,6 +233,19 @@ void ble_beacon_update_uwb_data(const char *data)
     if (uwb_data_handle != 0) {
         ble_gatts_chr_updated(uwb_data_handle);
     }
+}
+
+void ble_beacon_update_fsr_data(bool pressed)
+{
+    /* No-op if the GATT handle has not been assigned yet (BLE not ready) */
+    if (fsr_chr_handle == 0) {
+        return;
+    }
+
+    strncpy(fsr_data_buf, pressed ? "FSR:1" : "FSR:0", FSR_DATA_BUF_LEN - 1);
+    fsr_data_buf[FSR_DATA_BUF_LEN - 1] = '\0';
+
+    ble_gatts_chr_updated(fsr_chr_handle);
 }
 
 void ble_beacon_init(uint32_t dev_id)
