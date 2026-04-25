@@ -1,10 +1,12 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdbool.h>
 
 #include "common.h"
 #include "display.h"
 #include "ble_beacon.h"
+#include "uwb_parser.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -27,94 +29,38 @@
 // Max Frame is 239 bytes. 1024 is enough for ~4 frames.
 #define BUF_SIZE        1024 
 
-#define DSTO_HEAD      0x2A
-#define DSTO_FOOT      0x23
-#define CMD_TYPE_RANGE 0x71
-#define CMD_TYPE_CFG   0x02 
-
-#define MAX_PAYLOAD_LEN 240 
+// DSTP frame structure constants — protocol values live in uwb_parser.h
+#define DSTO_HEAD      UWB_FRAME_HEAD
+#define DSTO_FOOT      UWB_FRAME_FOOT
+#define MAX_PAYLOAD_LEN UWB_MAX_PAYLOAD_LEN
 
 
 static const char *TAG = "uwb_main";
 
-typedef union {
-    struct __attribute__((packed)) { 
-        uint64_t  dev_mode  :2;
-        uint64_t  dev_id    :32;
-        uint64_t  dev_type  :3;
-        uint64_t  done      :1;
-        uint64_t  inNet     :1;
-        uint64_t  reserved  :25;
-    } bit;
-    uint64_t value;
-} dev_para_u;
-
-
-static uint8_t get_Xor_CRC(uint8_t *bytes, int offset, int len) {
-    uint8_t xor_crc = 0;
-    for (int i = 0; i < len; i++) {
-        xor_crc ^= bytes[offset + i];
-    }
-    return xor_crc;
-}
+static bool ble_initialized = false;
 
 static void uwb_process_packet(uint8_t *data, uint16_t payload_len) {
-    uint8_t pkt_crc = data[3 + payload_len];
-    uint8_t calc_crc = get_Xor_CRC(data, 3, payload_len);
+    uwb_parse_result_t result = uwb_parse_frame(data, payload_len);
 
-    if (pkt_crc != calc_crc) {
-        ESP_LOGW(TAG, "CRC Error: Calc 0x%02X != Pkt 0x%02X", calc_crc, pkt_crc);
+    if (result.status == UWB_PARSE_ERR_CRC) {
+        ESP_LOGW(TAG, "CRC error in UWB frame");
         return;
     }
 
-    uint8_t cmd_type = data[19];
+    ESP_LOGI(TAG, "Range Frame: DSTO ID: %d", result.dsto_id);
 
-    if (cmd_type == CMD_TYPE_RANGE) {
-        // data[36] is online_dev_num
-        uint8_t online_dev_num = data[36];
-        // ESP_LOGI(TAG, "Range Frame: Online devices: %d", online_dev_num);
+    if (!ble_initialized && result.dsto_id != 0) {
+        ble_beacon_init(result.dsto_id);
+        ble_initialized = true;
+    }
 
-        char lvgl_str[256] = {0}; 
-        int lvgl_str_len = 0;
-        int display_count = 0;
-
-        for (int i = 0; i < online_dev_num ; i++) {
-            dev_para_u dev_para;
-            int base_idx = 37 + i * 10;
-
-            if (base_idx + 10 > 3 + payload_len) break;
-
-            memcpy(&dev_para.value, &data[base_idx], 8);
-
-            if (dev_para.bit.dev_id == 0) continue; 
-
-
-            uint16_t dis;
-            memcpy(&dis, &data[base_idx + 8], 2);
-
-            if (display_count < 6) {
-                int added = snprintf(lvgl_str + lvgl_str_len, sizeof(lvgl_str) - lvgl_str_len, 
-                                     "ID%d:%d cm\n", 
-                                     dev_para.bit.dev_id, dis);
-                if (added > 0) lvgl_str_len += added;
-                display_count++;
-            }
-            
-            // ESP_LOGI(TAG, "  DevID: %d, Distance: %d cm", (int)dev_para.bit.dev_id, dis);
-        }
-
-        if (online_dev_num == 0) {
-            display_update("No Devices");
-            ble_beacon_update_uwb_data("No Devices");
-        } else {
-            display_update(lvgl_str);
-            ble_beacon_update_uwb_data(lvgl_str);
-        }
-        
-    } else if (cmd_type == CMD_TYPE_CFG) {
+    if (result.status == UWB_PARSE_OK_RANGE) {
+        display_update(result.display_str);
+        if (ble_initialized) ble_beacon_update_uwb_data(result.display_str);
+    } else if (result.status == UWB_PARSE_OK_CFG) {
         ESP_LOGI(TAG, "Received configuration packet");
     } else {
-        ESP_LOGD(TAG, "Other command type: 0x%02X", cmd_type);
+        ESP_LOGD(TAG, "Other command type: 0x%02X", result.cmd_type);
     }
 }
 
@@ -217,8 +163,6 @@ void app_main(void)
     ESP_ERROR_CHECK(i2c_new_master_bus(&bus_config, &i2c_bus));
 
     display_init(i2c_bus);
-
-    ble_beacon_init();
 
     uart_config_t uart_config = {
         .baud_rate = 115200,

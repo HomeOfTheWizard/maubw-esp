@@ -21,7 +21,9 @@ void ble_store_config_init(void);
 
 static const char *TAG = "ble_beacon";
 
-#define BEACON_DEVICE_NAME  "atilla"
+#define BEACON_DEVICE_BASE  "atilla"
+
+static char beacon_device_name[32] = BEACON_DEVICE_BASE;
 
 /* ------------------------------------------------------------------ */
 /*  UWB data GATT characteristic                                        */
@@ -125,7 +127,7 @@ static void start_advertising(void)
         return;
     }
 
-    ESP_LOGI(TAG, "BLE advertising as \"%s\" (connectable)", BEACON_DEVICE_NAME);
+    ESP_LOGI(TAG, "BLE advertising as \"%s\" (connectable)", beacon_device_name);
 }
 
 /* ------------------------------------------------------------------ */
@@ -209,8 +211,10 @@ void ble_beacon_update_uwb_data(const char *data)
     }
 }
 
-void ble_beacon_init(void)
+void ble_beacon_init(uint32_t dev_id)
 {
+    snprintf(beacon_device_name, sizeof(beacon_device_name), "%s_%lu",
+             BEACON_DEVICE_BASE, (unsigned long)dev_id);
     /* NVS flash is required by the BLE host for storing addresses/keys */
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -225,7 +229,7 @@ void ble_beacon_init(void)
     /* Register GAP and GATT base services */
     ble_svc_gap_init();
     ble_svc_gatt_init();
-    ESP_ERROR_CHECK(ble_svc_gap_device_name_set(BEACON_DEVICE_NAME));
+    ESP_ERROR_CHECK(ble_svc_gap_device_name_set(beacon_device_name));
 
     /* Register custom GATT service table */
     ESP_ERROR_CHECK(ble_gatts_count_cfg(gatt_svcs));

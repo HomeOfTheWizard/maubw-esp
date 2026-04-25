@@ -1,11 +1,14 @@
 #pragma once
 
+#include <stdint.h>
+
 /**
  * Initialize NVS flash, the NimBLE host stack, GATT server, and start
- * connectable BLE advertising as "atilla".
- * Must be called once from app_main.
+ * connectable BLE advertising as "atilla_<dev_id>".
+ * Must be called once, after the first valid UWB dev_id is known.
+ * @param dev_id  Device ID suffix appended to the base name.
  */
-void ble_beacon_init(void);
+void ble_beacon_init(uint32_t dev_id);
 
 /**
  * Update the UWB distance string exposed via the GATT characteristic.
