@@ -1,8 +1,7 @@
-# Atilla ESP32-S3 Controller Firmware
+# ESP32-S3 Controller Firmware
 
 ## Introduction
-This project is the firmware for the main controller (ESP32-S3) in the Atilla hardware platform.
-Atilla is a wearable motion capture device designed to help analyze and guide archery training sessions.
+This project is the firmware for the main controller (ESP32-S3) in the MaUWB hardware platform.
 
 The firmware reads UWB distance frames, bridges UART traffic for debugging/integration, updates an OLED UI in real time, and exposes live distance data to BLE clients via a GATT server.
 
